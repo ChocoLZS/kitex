@@ -28,9 +28,9 @@ func TestEnablePool(t *testing.T) {
 		test.Assert(t, !PoolEnabled())
 	})
 
-	t.Run("disable-enable", func(t *testing.T) {
+	t.Run("enable-is-noop", func(t *testing.T) {
 		EnablePool(false)
 		EnablePool(true)
-		test.Assert(t, PoolEnabled())
+		test.Assert(t, !PoolEnabled())
 	})
 }

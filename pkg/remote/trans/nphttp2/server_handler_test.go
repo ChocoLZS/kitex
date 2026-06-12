@@ -382,14 +382,12 @@ func Test_RPCInfoReuse(t *testing.T) {
 		disableReuse bool
 	}{
 		{
-			desc:        "Unary",
-			mode:        serviceinfo.StreamingUnary,
-			expectReuse: true,
+			desc: "Unary",
+			mode: serviceinfo.StreamingUnary,
 		},
 		{
-			desc:        "None",
-			mode:        serviceinfo.StreamingNone,
-			expectReuse: true,
+			desc: "None",
+			mode: serviceinfo.StreamingNone,
 		},
 		{
 			desc:         "Unary with disable rpcinfo reuse",

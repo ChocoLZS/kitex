@@ -26,7 +26,6 @@ import (
 )
 
 func TestNewRPCInfoWithInlineFields(t *testing.T) {
-	rpcinfo.EnablePool(true)
 	ri := rpcinfo.NewRPCInfoWithInlineFields()
 	test.Assert(t, ri != nil)
 	test.Assert(t, ri.From() != nil)
@@ -37,6 +36,14 @@ func TestNewRPCInfoWithInlineFields(t *testing.T) {
 
 	// Test recycle
 	ri.(internal.Reusable).Recycle()
+}
+
+func TestNewRPCInfoWithInlineFieldsAlwaysAllocates(t *testing.T) {
+	ri1 := rpcinfo.NewRPCInfoWithInlineFields()
+	ri1.(internal.Reusable).Recycle()
+	ri2 := rpcinfo.NewRPCInfoWithInlineFields()
+
+	test.Assert(t, ri1 != ri2)
 }
 
 func TestInlineRPCInfo_PutRPCInfo(t *testing.T) {
@@ -69,19 +76,19 @@ func TestInlineRPCInfo_PutRPCInfo(t *testing.T) {
 	test.Assert(t, ri.Config() != nil)
 	test.Assert(t, ri.Stats() != nil)
 
-	test.Assert(t, ri.From().ServiceName() == "")
-	test.Assert(t, ri.From().Method() == "")
-	test.Assert(t, ri.From().Address() == nil)
+	test.Assert(t, ri.From().ServiceName() == "from")
+	test.Assert(t, ri.From().Method() == "from-method")
+	test.Assert(t, ri.From().Address() != nil)
 	_, exist := ri.From().Tag("key")
-	test.Assert(t, !exist)
+	test.Assert(t, exist)
 
-	test.Assert(t, ri.To().ServiceName() == "")
-	test.Assert(t, ri.To().Method() == "")
-	test.Assert(t, ri.Invocation().ServiceName() == "")
-	test.Assert(t, ri.Invocation().MethodName() == "")
-	test.Assert(t, ri.Config().RPCTimeout() == 0)
-	test.Assert(t, ri.Stats().Level() == 0)
-	test.Assert(t, ri.Stats().SendSize() == 0)
+	test.Assert(t, ri.To().ServiceName() == "to")
+	test.Assert(t, ri.To().Method() == "to-method")
+	test.Assert(t, ri.Invocation().ServiceName() == "svc")
+	test.Assert(t, ri.Invocation().MethodName() == "method")
+	test.Assert(t, ri.Config().RPCTimeout() == 123)
+	test.Assert(t, ri.Stats().Level() == 1)
+	test.Assert(t, ri.Stats().SendSize() == 9)
 }
 
 func BenchmarkNewRPCInfoWithInlineFields(b *testing.B) {
