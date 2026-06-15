@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -139,8 +138,7 @@ func TestMuxSvrWrite(t *testing.T) {
 			},
 		},
 	}
-	pool := &sync.Pool{}
-	muxSvrCon := newMuxSvrConn(npconn, pool)
+	muxSvrCon := newMuxSvrConn(npconn)
 	test.Assert(t, muxSvrCon != nil)
 
 	ctx := context.Background()
@@ -199,8 +197,7 @@ func TestMuxSvrOnRead(t *testing.T) {
 		},
 	}
 
-	pool := &sync.Pool{}
-	muxSvrCon := newMuxSvrConn(npconn, pool)
+	muxSvrCon := newMuxSvrConn(npconn)
 
 	var err error
 
@@ -281,8 +278,7 @@ func TestPanicAfterMuxSvrOnRead(t *testing.T) {
 		},
 	}
 
-	pool := &sync.Pool{}
-	muxSvrCon := newMuxSvrConn(conn, pool)
+	muxSvrCon := newMuxSvrConn(conn)
 
 	// 2. test
 	var err error
@@ -349,8 +345,7 @@ func TestRecoverAfterOnReadPanic(t *testing.T) {
 		},
 	}
 
-	pool := &sync.Pool{}
-	muxSvrCon := newMuxSvrConn(conn, pool)
+	muxSvrCon := newMuxSvrConn(conn)
 
 	svrTransHdlr, _ := NewSvrTransHandlerFactory().NewTransHandler(opt)
 
@@ -459,14 +454,7 @@ func TestInvokeError(t *testing.T) {
 
 	svrTransHdlr, _ := NewSvrTransHandlerFactory().NewTransHandler(opt)
 
-	pool := &sync.Pool{
-		New: func() interface{} {
-			// init rpcinfo
-			ri := opt.InitOrResetRPCInfoFunc(nil, npconn.RemoteAddr())
-			return ri
-		},
-	}
-	muxSvrCon := newMuxSvrConn(npconn, pool)
+	muxSvrCon := newMuxSvrConn(npconn)
 
 	var err error
 	ctx := context.Background()
@@ -599,8 +587,7 @@ func TestInvokeNoMethod(t *testing.T) {
 	}
 	svrTransHdlr, _ := NewSvrTransHandlerFactory().NewTransHandler(svrOpt)
 
-	pool := &sync.Pool{}
-	muxSvrCon := newMuxSvrConn(npconn, pool)
+	muxSvrCon := newMuxSvrConn(npconn)
 
 	var err error
 	ctx := context.Background()
@@ -709,8 +696,7 @@ func TestMuxSvrOnReadHeartbeat(t *testing.T) {
 		},
 	}
 
-	pool := &sync.Pool{}
-	muxSvrCon := newMuxSvrConn(npconn, pool)
+	muxSvrCon := newMuxSvrConn(npconn)
 
 	var err error
 

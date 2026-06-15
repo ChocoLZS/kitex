@@ -104,9 +104,6 @@ func (s *server) BuildServiceInlineInvokeChain() endpoint.Endpoint {
 			ptr := ctx.Value(consts.SERVICE_INLINE_RPCINFO_KEY).(unsafe.Pointer)
 			cliRPCInfo := *(*rpcinfo.RPCInfo)(ptr)
 			serverCtx, svrRPCInfo := s.constructServerRPCInfo(serverCtx, cliRPCInfo)
-			defer func() {
-				rpcinfo.PutRPCInfo(svrRPCInfo)
-			}()
 
 			// server trace
 			serverCtx = svrTraceCtl.DoStart(serverCtx, svrRPCInfo)

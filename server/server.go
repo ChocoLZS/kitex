@@ -107,25 +107,6 @@ func fillContext(opt *internal_server.Options) context.Context {
 
 func (s *server) initOrResetRPCInfoFunc() func(rpcinfo.RPCInfo, net.Addr) rpcinfo.RPCInfo {
 	return func(ri rpcinfo.RPCInfo, rAddr net.Addr) rpcinfo.RPCInfo {
-		// Reset existing rpcinfo to improve performance for long connections (PR #584).
-		if ri != nil && rpcinfo.PoolEnabled() {
-			fi := rpcinfo.AsMutableEndpointInfo(ri.From())
-			fi.Reset()
-			fi.SetAddress(rAddr)
-			rpcinfo.AsMutableEndpointInfo(ri.To()).ResetFromBasicInfo(s.opt.Svr)
-			if setter, ok := ri.Invocation().(rpcinfo.InvocationSetter); ok {
-				setter.Reset()
-			}
-			rpcinfo.AsMutableRPCConfig(ri.Config()).CopyFrom(s.opt.Configs)
-			rpcStats := rpcinfo.AsMutableRPCStats(ri.Stats())
-			rpcStats.Reset()
-			if s.opt.StatsLevel != nil {
-				rpcStats.SetLevel(*s.opt.StatsLevel)
-			}
-			return ri
-		}
-
-		// allocate a new rpcinfo if it's the connection's first request or rpcInfoPool is disabled
 		// Use inlined fields to avoid separate pool allocations.
 		ri = rpcinfo.NewRPCInfoWithInlineFields()
 		rpcinfo.AsMutableEndpointInfo(ri.To()).ResetFromBasicInfo(s.opt.Svr)
