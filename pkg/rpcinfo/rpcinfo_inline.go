@@ -17,8 +17,16 @@
 package rpcinfo
 
 import (
+	"sync"
+
 	"github.com/cloudwego/kitex/pkg/stats"
 )
+
+var inlineRPCInfoPool sync.Pool
+
+func init() {
+	inlineRPCInfoPool.New = newInlineRPCInfo
+}
 
 type inlineRPCInfo struct {
 	from       endpointInfo
@@ -43,18 +51,28 @@ func (r *inlineRPCInfo) Config() RPCConfig { return &r.config }
 // Stats implements the RPCInfo interface.
 func (r *inlineRPCInfo) Stats() RPCStats { return &r.stats }
 
-// Recycle is kept for compatibility. RPCInfo is no longer reused.
-func (r *inlineRPCInfo) Recycle() {}
+// Recycle reuses the inlineRPCInfo.
+func (r *inlineRPCInfo) Recycle() {
+	if !PoolEnabled() {
+		return
+	}
+	r.from.zero()
+	r.to.zero()
+	r.invocation.zero()
+	r.config.initialize()
+	r.stats.Reset()
+	inlineRPCInfoPool.Put(r)
+}
 
 // NewRPCInfoWithInlineFields creates an RPCInfo using inlined concrete fields,
 // avoiding separate pool allocations for from, to, invocation, config, and stats.
 // The returned RPCInfo's From(), To(), Invocation(), Config(), and Stats() return
 // pointers to the inlined fields. Use AsMutable* to modify them after creation.
 func NewRPCInfoWithInlineFields() RPCInfo {
-	return newInlineRPCInfo()
+	return inlineRPCInfoPool.Get().(*inlineRPCInfo)
 }
 
-func newInlineRPCInfo() *inlineRPCInfo {
+func newInlineRPCInfo() interface{} {
 	once.Do(func() {
 		stats.FinishInitialization()
 		maxEventNum = stats.MaxEventNum()

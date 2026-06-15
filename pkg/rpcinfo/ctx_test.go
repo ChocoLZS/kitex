@@ -68,12 +68,9 @@ func TestPutRPCInfo(t *testing.T) {
 	rpcinfo.PutRPCInfo(nil)
 	rpcinfo.PutRPCInfo(ri)
 
-	test.Assert(t, ri.From() != nil)
-	test.Assert(t, ri.To() != nil)
-	test.Assert(t, ri.Invocation() != nil)
-	test.Assert(t, ri.Config() != nil)
-	test.Assert(t, ri.Stats() != nil)
-	test.Assert(t, ri.From().ServiceName() == svcName)
-	test.Assert(t, ri.To().ServiceName() == svcName)
-	test.Assert(t, ri.Invocation().ServiceName() == svcName)
+	test.Assert(t, ri.From() == nil)
+	test.Assert(t, ri.To() == nil)
+	test.Assert(t, ri.Invocation() == nil)
+	test.Assert(t, ri.Config() == nil)
+	test.Assert(t, ri.Stats() == nil)
 }

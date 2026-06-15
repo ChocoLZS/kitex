@@ -277,9 +277,8 @@ func TestInitOrResetRPCInfo(t *testing.T) {
 	test.Assert(t, ri.Stats().Error() == nil)
 	test.Assert(t, ri.Stats().Level() == 0)
 
-	// Pool toggles are kept only for API compatibility.
 	rpcinfo.EnablePool(true)
-	test.Assert(t, !rpcinfo.PoolEnabled())
+	test.Assert(t, rpcinfo.PoolEnabled())
 }
 
 func TestServiceRegisterFailed(t *testing.T) {
