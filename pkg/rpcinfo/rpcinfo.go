@@ -52,6 +52,10 @@ func initPoolEnabledFromEnv() {
 //
 // By turning off the pool, we can quickly confirm whether the concurrency issues is
 // caused by such cases, but do remember there's a PERFORMANCE LOSS.
+//
+// Deprecated: RPCInfo pooling may cause panic when RPCInfo is accessed
+// asynchronously after it has been recycled. Kitex is gradually migrating away
+// from RPCInfo pooling and will remove this pooling mechanism in the future.
 func EnablePool(enable bool) {
 	if enable {
 		atomic.StoreInt32(&enablePool, 1)
@@ -61,6 +65,10 @@ func EnablePool(enable bool) {
 }
 
 // PoolEnabled returns true if rpcInfoPool is enabled.
+//
+// Deprecated: RPCInfo pooling may cause panic when RPCInfo is accessed
+// asynchronously after it has been recycled. Kitex is gradually migrating away
+// from RPCInfo pooling and will remove this pooling mechanism in the future.
 func PoolEnabled() bool {
 	return atomic.LoadInt32(&enablePool) == 1
 }
@@ -97,6 +105,10 @@ func (r *rpcInfo) zero() {
 }
 
 // Recycle reuses the rpcInfo.
+//
+// Deprecated: RPCInfo recycling may cause panic when RPCInfo is accessed
+// asynchronously after it has been recycled. Kitex is gradually migrating away
+// from RPCInfo pooling and will remove this pooling mechanism in the future.
 func (r *rpcInfo) Recycle() {
 	if !PoolEnabled() {
 		return

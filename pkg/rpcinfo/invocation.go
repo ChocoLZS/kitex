@@ -30,8 +30,12 @@ import (
 const InvocationServiceInfoKey = "service_info_key"
 
 var (
-	_              Invocation       = (*invocation)(nil)
-	_              InvocationSetter = (*invocation)(nil)
+	_ Invocation       = (*invocation)(nil)
+	_ InvocationSetter = (*invocation)(nil)
+
+	// Deprecated: invocation pooling is part of the legacy RPCInfo pooling
+	// mechanism. When RPCInfo pooling is disabled, framework-owned invocations
+	// are no longer put back through the RPCInfo lifecycle.
 	invocationPool sync.Pool
 	globalSeqID    int32 = 0
 )
@@ -196,6 +200,11 @@ func (i *invocation) Reset() {
 }
 
 // Recycle reuses the invocation.
+//
+// Deprecated: invocation recycling is part of the RPCInfo pooling mechanism,
+// which may cause panic when RPCInfo is accessed asynchronously after it has
+// been recycled. Kitex is gradually migrating away from RPCInfo pooling and will
+// remove this pooling mechanism in the future.
 func (i *invocation) Recycle() {
 	i.zero()
 	invocationPool.Put(i)
