@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -55,6 +56,108 @@ func (m mockMetaHandler) OnConnectStream(ctx context.Context) (context.Context, 
 
 func (m mockMetaHandler) OnReadStream(ctx context.Context) (context.Context, error) {
 	return m.onReadStream(ctx)
+}
+
+func mustReadRPCInfoAsync(t *testing.T, ctx context.Context) {
+	t.Helper()
+	done := make(chan interface{}, 1)
+	go func() {
+		defer func() {
+			done <- recover()
+		}()
+		readRPCInfoForAsyncTest(ctx)
+	}()
+	if panicInfo := <-done; panicInfo != nil {
+		t.Fatalf("async RPCInfo read panicked: %v", panicInfo)
+	}
+}
+
+func readRPCInfoForAsyncTest(ctx context.Context) {
+	ri := rpcinfo.GetRPCInfo(ctx)
+	if ri == nil {
+		panic("nil RPCInfo")
+	}
+	from := ri.From()
+	if from == nil {
+		panic("nil From endpoint")
+	}
+	_ = from.ServiceName()
+	_ = from.Method()
+	_ = from.Address()
+	_, _ = from.Tag("cluster")
+	_ = from.DefaultTag("cluster", "")
+
+	to := ri.To()
+	if to == nil {
+		panic("nil To endpoint")
+	}
+	_ = to.ServiceName()
+	_ = to.Method()
+	_ = to.Address()
+	_, _ = to.Tag("cluster")
+	_ = to.DefaultTag("cluster", "")
+
+	inv := ri.Invocation()
+	if inv == nil {
+		panic("nil Invocation")
+	}
+	_ = inv.ServiceName()
+	_ = inv.MethodName()
+	_ = inv.PackageName()
+	_ = inv.SeqID()
+	_ = inv.StreamingMode()
+
+	cfg := ri.Config()
+	if cfg == nil {
+		panic("nil RPCConfig")
+	}
+	_ = cfg.RPCTimeout()
+	_ = cfg.ConnectTimeout()
+	_ = cfg.ReadWriteTimeout()
+
+	st := ri.Stats()
+	if st == nil {
+		panic("nil RPCStats")
+	}
+	_ = st.Level()
+	_ = st.Error()
+	_, _ = st.Panicked()
+	_ = st.SendSize()
+	_ = st.RecvSize()
+}
+
+func readRPCInfoUntilStopped(ctx context.Context, stop <-chan struct{}, started chan<- struct{}, done chan<- interface{}) {
+	close(started)
+	defer func() {
+		done <- recover()
+	}()
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+			readRPCInfoForAsyncTest(ctx)
+			runtime.Gosched()
+		}
+	}
+}
+
+func waitSvrTransHandlersDone(t *testing.T, handler *svrTransHandler) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		var active int32
+		handler.mu.Lock()
+		for elem := handler.li.Front(); elem != nil; elem = elem.Next() {
+			active += atomic.LoadInt32(&elem.Value.(*SvrTrans).handlerNum)
+		}
+		handler.mu.Unlock()
+		if active == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timeout waiting for nphttp2 server handlers")
 }
 
 func TestServerHandler(t *testing.T) {
@@ -153,6 +256,123 @@ func TestServerHandler(t *testing.T) {
 
 	// test SetPipeline()
 	handler.SetPipeline(nil)
+}
+
+func TestSvrTransHandlerRPCInfoAsyncReadAfterHandle(t *testing.T) {
+	originState := rpcinfo.PoolEnabled()
+	rpcinfo.EnablePool(false)
+	defer rpcinfo.EnablePool(originState)
+
+	opt := newMockServerOption()
+	opt.SvcSearcher = mocksremote.NewMockSvcSearcher(map[string]*serviceinfo.ServiceInfo{
+		"Greeter": {
+			Methods: map[string]serviceinfo.MethodInfo{
+				"SayHello": serviceinfo.NewMethodInfo(func(ctx context.Context, handler, args, result interface{}) error {
+					return nil
+				}, func() interface{} { return nil }, func() interface{} { return nil }, false,
+					serviceinfo.WithStreamingMode(serviceinfo.StreamingUnary),
+				),
+			},
+		},
+	})
+	handler, err := NewSvrTransHandlerFactory().NewTransHandler(opt)
+	test.Assert(t, err == nil, err)
+
+	capturedCh := make(chan context.Context, 1)
+	handler.(remote.InvokeHandleFuncSetter).SetInvokeHandleFunc(func(ctx context.Context, req, resp interface{}) error {
+		capturedCh <- ctx
+		return nil
+	})
+
+	npConn := newMockNpConn(mockAddr0)
+	npConn.mockSettingFrame()
+	npConn.mockMetaHeaderFrame()
+
+	ctx, err := handler.OnActive(newMockCtxWithRPCInfo(serviceinfo.StreamingUnary), npConn)
+	test.Assert(t, err == nil, err)
+
+	go func() {
+		_ = handler.OnRead(ctx, npConn)
+	}()
+
+	var captured context.Context
+	select {
+	case captured = <-capturedCh:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for nphttp2 server handler")
+	}
+	time.Sleep(50 * time.Millisecond)
+	mustReadRPCInfoAsync(t, captured)
+}
+
+func TestSvrTransHandlerRPCInfoNoRaceWithAsyncReadDuringFinish(t *testing.T) {
+	originState := rpcinfo.PoolEnabled()
+	rpcinfo.EnablePool(false)
+	defer rpcinfo.EnablePool(originState)
+
+	opt := newMockServerOption()
+	opt.InitOrResetRPCInfoFunc = func(ri rpcinfo.RPCInfo, addr net.Addr) rpcinfo.RPCInfo {
+		if ri != nil {
+			if from := rpcinfo.AsMutableEndpointInfo(ri.From()); from != nil {
+				from.Reset()
+				from.SetAddress(addr)
+			}
+			if stats := rpcinfo.AsMutableRPCStats(ri.Stats()); stats != nil {
+				stats.Reset()
+			}
+			if setter, ok := ri.Invocation().(rpcinfo.InvocationSetter); ok {
+				setter.Reset()
+			}
+			return ri
+		}
+		nri := newMockRPCInfo(serviceinfo.StreamingUnary)
+		rpcinfo.AsMutableEndpointInfo(nri.From()).SetAddress(addr)
+		return nri
+	}
+	opt.SvcSearcher = mocksremote.NewMockSvcSearcher(map[string]*serviceinfo.ServiceInfo{
+		"Greeter": {
+			Methods: map[string]serviceinfo.MethodInfo{
+				"SayHello": serviceinfo.NewMethodInfo(func(ctx context.Context, handler, args, result interface{}) error {
+					return nil
+				}, func() interface{} { return nil }, func() interface{} { return nil }, false,
+					serviceinfo.WithStreamingMode(serviceinfo.StreamingUnary),
+				),
+			},
+		},
+	})
+	handler, err := NewSvrTransHandlerFactory().NewTransHandler(opt)
+	test.Assert(t, err == nil, err)
+
+	stop := make(chan struct{})
+	started := make(chan struct{})
+	done := make(chan interface{}, 1)
+	handler.(remote.InvokeHandleFuncSetter).SetInvokeHandleFunc(func(ctx context.Context, req, resp interface{}) error {
+		go readRPCInfoUntilStopped(ctx, stop, started, done)
+		<-started
+		return nil
+	})
+
+	npConn := newMockNpConn(mockAddr0)
+	npConn.mockSettingFrame()
+	npConn.mockMetaHeaderFrame()
+
+	ctx, err := handler.OnActive(newMockCtxWithRPCInfo(serviceinfo.StreamingUnary), npConn)
+	test.Assert(t, err == nil, err)
+
+	go func() {
+		_ = handler.OnRead(ctx, npConn)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for nphttp2 server handler")
+	}
+	waitSvrTransHandlersDone(t, handler.(*svrTransHandler))
+	close(stop)
+	if panicInfo := <-done; panicInfo != nil {
+		t.Fatalf("async RPCInfo read panicked: %v", panicInfo)
+	}
 }
 
 type mockStream struct {
