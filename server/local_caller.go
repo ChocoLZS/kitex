@@ -194,7 +194,6 @@ func (lc *localCaller) Call(ctx context.Context, method string, args, result any
 			retErr = wrapped
 		}
 		lc.traceCtl.DoFinish(ctx, ri, callErr)
-		rpcinfo.PutRPCInfo(ri)
 	}()
 
 	callErr = lc.svr.eps(ctx, args, result)

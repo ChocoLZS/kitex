@@ -374,32 +374,18 @@ func Test_parseGraceAndPollTime(t *testing.T) {
 	test.Assert(t, pollTime < defaultMaxPollTime, pollTime)
 }
 
-func Test_RPCInfoReuse(t *testing.T) {
+func Test_RPCInfoIsNotReused(t *testing.T) {
 	testcases := []struct {
-		desc         string
-		mode         serviceinfo.StreamingMode
-		expectReuse  bool
-		disableReuse bool
+		desc string
+		mode serviceinfo.StreamingMode
 	}{
 		{
-			desc:        "Unary",
-			mode:        serviceinfo.StreamingUnary,
-			expectReuse: true,
+			desc: "Unary",
+			mode: serviceinfo.StreamingUnary,
 		},
 		{
-			desc:        "None",
-			mode:        serviceinfo.StreamingNone,
-			expectReuse: true,
-		},
-		{
-			desc:         "Unary with disable rpcinfo reuse",
-			mode:         serviceinfo.StreamingUnary,
-			disableReuse: true,
-		},
-		{
-			desc:         "None with disable rpcinfo reuse",
-			mode:         serviceinfo.StreamingNone,
-			disableReuse: true,
+			desc: "None",
+			mode: serviceinfo.StreamingNone,
 		},
 		{
 			desc: "ClientStreaming",
@@ -417,11 +403,6 @@ func Test_RPCInfoReuse(t *testing.T) {
 
 	for _, tc := range testcases {
 		t.Run(tc.desc, func(t *testing.T) {
-			if tc.disableReuse {
-				rpcinfo.EnablePool(false)
-				defer rpcinfo.EnablePool(true)
-			}
-
 			var poolPutCount int32
 			var capturedRPCInfo rpcinfo.RPCInfo
 
@@ -471,11 +452,7 @@ func Test_RPCInfoReuse(t *testing.T) {
 			test.Assert(t, capturedRPCInfo != nil)
 			time.Sleep(time.Millisecond * 50) // Wait for defer to complete
 			putCount := atomic.LoadInt32(&poolPutCount)
-			if tc.expectReuse {
-				test.Assert(t, putCount == 1, putCount)
-			} else {
-				test.Assert(t, putCount == 0, putCount)
-			}
+			test.Assert(t, putCount == 0, putCount)
 		})
 	}
 }

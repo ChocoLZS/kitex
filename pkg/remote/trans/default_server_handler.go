@@ -117,15 +117,8 @@ func (t *svrTransHandler) Read(ctx context.Context, conn net.Conn, recvMsg remot
 }
 
 func (t *svrTransHandler) newCtxWithRPCInfo(ctx context.Context, conn net.Conn) (context.Context, rpcinfo.RPCInfo) {
-	var ri rpcinfo.RPCInfo
-	if rpcinfo.PoolEnabled() { // reuse per-connection rpcinfo
-		ri = rpcinfo.GetRPCInfo(ctx)
-		// delayed reinitialize for faster response
-	} else {
-		// new rpcinfo if reuse is disabled
-		ri = t.opt.InitOrResetRPCInfoFunc(nil, conn.RemoteAddr())
-		ctx = rpcinfo.NewCtxWithRPCInfo(ctx, ri)
-	}
+	ri := t.opt.InitOrResetRPCInfoFunc(nil, conn.RemoteAddr())
+	ctx = rpcinfo.NewCtxWithRPCInfo(ctx, ri)
 	if atomic.LoadUint32(&t.inGracefulShutdown) == 1 {
 		// If server is in graceful shutdown status, mark connection reset flag to all responses to let client close the connections.
 		if ei := rpcinfo.AsTaggable(ri.To()); ei != nil {
@@ -163,10 +156,6 @@ func (t *svrTransHandler) OnRead(ctx context.Context, conn net.Conn) (err error)
 		t.finishProfiler(ctx)
 		remote.RecycleMessage(recvMsg)
 		remote.RecycleMessage(sendMsg)
-		// reset rpcinfo for reuse
-		if rpcinfo.PoolEnabled() {
-			t.opt.InitOrResetRPCInfoFunc(ri, conn.RemoteAddr())
-		}
 		if err != nil && !closeConnOutsideIfErr {
 			// when error is not nil, outside will close conn,
 			// set err to nil to indicate that this kind of error does not require closing the connection
@@ -230,16 +219,12 @@ func (t *svrTransHandler) OnMessage(ctx context.Context, args, result remote.Mes
 // OnActive implements the remote.ServerTransHandler interface.
 func (t *svrTransHandler) OnActive(ctx context.Context, conn net.Conn) (context.Context, error) {
 	ctx = remote.WithServiceSearcher(ctx, t.svcSearcher)
-	// init rpcinfo
 	ri := t.opt.InitOrResetRPCInfoFunc(nil, conn.RemoteAddr())
 	return rpcinfo.NewCtxWithRPCInfo(ctx, ri), nil
 }
 
 // OnInactive implements the remote.ServerTransHandler interface.
-func (t *svrTransHandler) OnInactive(ctx context.Context, conn net.Conn) {
-	// recycle rpcinfo
-	rpcinfo.PutRPCInfo(rpcinfo.GetRPCInfo(ctx))
-}
+func (t *svrTransHandler) OnInactive(ctx context.Context, conn net.Conn) {}
 
 // OnError implements the remote.ServerTransHandler interface.
 func (t *svrTransHandler) OnError(ctx context.Context, err error, conn net.Conn) {
