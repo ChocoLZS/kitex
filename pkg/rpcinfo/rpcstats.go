@@ -32,8 +32,12 @@ var (
 	_ internal.Reusable = (*rpcStats)(nil)
 	_ internal.Reusable = (*event)(nil)
 
+	// Deprecated: rpcStats pooling is part of the legacy RPCInfo pooling
+	// mechanism. When RPCInfo pooling is disabled, framework-owned rpcStats
+	// objects are no longer put back through the RPCInfo lifecycle.
 	rpcStatsPool = sync.Pool{New: func() interface{} { return newRPCStats() }}
-	eventPool    = sync.Pool{New: func() interface{} { return &event{} }}
+
+	eventPool = sync.Pool{New: func() interface{} { return &event{} }}
 
 	once        sync.Once
 	maxEventNum int
@@ -81,6 +85,9 @@ func (e *event) zero() {
 }
 
 // Recycle reuses the event.
+//
+// Deprecated: event recycling is part of rpcinfo's legacy pooling internals and
+// will be removed as Kitex migrates away from RPCInfo pooling.
 func (e *event) Recycle() {
 	e.zero()
 	eventPool.Put(e)
@@ -314,6 +321,11 @@ func (r *rpcStats) ImmutableView() RPCStats {
 }
 
 // Recycle reuses the rpcStats.
+//
+// Deprecated: rpcStats recycling is part of the RPCInfo pooling mechanism,
+// which may cause panic when RPCInfo is accessed asynchronously after it has
+// been recycled. Kitex is gradually migrating away from RPCInfo pooling and will
+// remove this pooling mechanism in the future.
 func (r *rpcStats) Recycle() {
 	r.Reset()
 	rpcStatsPool.Put(r)

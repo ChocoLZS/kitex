@@ -52,7 +52,11 @@ type RefreshableInstance interface {
 }
 
 var (
-	_              RemoteInfo = &remoteInfo{}
+	_ RemoteInfo = &remoteInfo{}
+
+	// Deprecated: remoteInfo pooling is part of the legacy RPCInfo pooling
+	// mechanism. When RPCInfo pooling is disabled, framework-owned remoteInfo
+	// objects are no longer put back through the RPCInfo lifecycle.
 	remoteInfoPool sync.Pool
 )
 
@@ -195,6 +199,11 @@ func (ri *remoteInfo) zero() {
 }
 
 // Recycle is used to recycle the remoteInfo.
+//
+// Deprecated: remoteInfo recycling is part of the RPCInfo pooling mechanism,
+// which may cause panic when RPCInfo is accessed asynchronously after it has
+// been recycled. Kitex is gradually migrating away from RPCInfo pooling and will
+// remove this pooling mechanism in the future.
 func (ri *remoteInfo) Recycle() {
 	if r, ok := ri.instance.(internal.Reusable); ok {
 		r.Recycle()

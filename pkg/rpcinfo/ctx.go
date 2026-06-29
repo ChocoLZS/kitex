@@ -44,6 +44,10 @@ func GetRPCInfo(ctx context.Context) RPCInfo {
 }
 
 // PutRPCInfo recycles the RPCInfo. This function is for internal use only.
+//
+// Deprecated: RPCInfo recycling may cause panic when RPCInfo is accessed
+// asynchronously after it has been recycled. Kitex is gradually migrating away
+// from RPCInfo pooling and will remove this pooling mechanism in the future.
 func PutRPCInfo(ri RPCInfo) {
 	if v, ok := ri.(internal.Reusable); ok {
 		v.Recycle()
