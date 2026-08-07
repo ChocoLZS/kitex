@@ -30,6 +30,7 @@ import (
 	remotemocks "github.com/cloudwego/kitex/internal/mocks/remote"
 	"github.com/cloudwego/kitex/internal/mocks/stats"
 	"github.com/cloudwego/kitex/internal/test"
+	"github.com/cloudwego/kitex/internal/test/rpcinfotest"
 	"github.com/cloudwego/kitex/pkg/kerrors"
 	"github.com/cloudwego/kitex/pkg/remote"
 	"github.com/cloudwego/kitex/pkg/rpcinfo"
@@ -39,6 +40,17 @@ var (
 	svcInfo     = mocks.ServiceInfo()
 	svcSearcher = remotemocks.NewDefaultSvcSearcher()
 )
+
+func initOrResetMockServerRPCInfo(ri rpcinfo.RPCInfo, addr net.Addr) rpcinfo.RPCInfo {
+	// When RPCInfo pooling is disabled, OnRead initializes a fresh RPCInfo by
+	// passing nil to InitOrResetRPCInfoFunc. Keep the mock compatible with both
+	// the pooled reset path and the non-pooled initialization path.
+	if ri == nil {
+		ri = newMockRPCInfo()
+	}
+	rpcinfo.AsMutableEndpointInfo(ri.From()).SetAddress(addr)
+	return ri
+}
 
 func TestDefaultSvrTransHandler(t *testing.T) {
 	buf := remote.NewReaderWriterBuffer(1024)
@@ -127,12 +139,9 @@ func TestSvrTransHandlerBizError(t *testing.T) {
 				return nil
 			},
 		},
-		SvcSearcher: svcSearcher,
-		TracerCtl:   tracerCtl,
-		InitOrResetRPCInfoFunc: func(ri rpcinfo.RPCInfo, addr net.Addr) rpcinfo.RPCInfo {
-			rpcinfo.AsMutableEndpointInfo(ri.From()).SetAddress(addr)
-			return ri
-		},
+		SvcSearcher:            svcSearcher,
+		TracerCtl:              tracerCtl,
+		InitOrResetRPCInfoFunc: initOrResetMockServerRPCInfo,
 	}
 	ri := rpcinfo.NewRPCInfo(rpcinfo.EmptyEndpointInfo(), rpcinfo.FromBasicInfo(&rpcinfo.EndpointBasicInfo{}),
 		rpcinfo.NewInvocation("", mocks.MockMethod), nil, rpcinfo.NewRPCStats())
@@ -149,6 +158,52 @@ func TestSvrTransHandlerBizError(t *testing.T) {
 	test.Assert(t, err == nil)
 	err = svrHandler.OnRead(ctx, &mocks.Conn{})
 	test.Assert(t, err == nil)
+}
+
+func TestRPCInfoAccessNoRace(t *testing.T) {
+	buf := remote.NewReaderWriterBuffer(1024)
+	ext := &MockExtension{
+		NewWriteByteBufferFunc: func(ctx context.Context, conn net.Conn, msg remote.Message) remote.ByteBuffer {
+			return buf
+		},
+		NewReadByteBufferFunc: func(ctx context.Context, conn net.Conn, msg remote.Message) remote.ByteBuffer {
+			return buf
+		},
+	}
+	opt := &remote.ServerOption{
+		Codec: &MockCodec{
+			EncodeFunc: func(ctx context.Context, msg remote.Message, out remote.ByteBuffer) error {
+				return nil
+			},
+			DecodeFunc: func(ctx context.Context, msg remote.Message, in remote.ByteBuffer) error {
+				mink := msg.RPCInfo().Invocation().(rpcinfo.InvocationSetter)
+				mink.SetServiceName(mocks.MockServiceName)
+				mink.SetMethodName(mocks.MockMethod)
+				mink.SetMethodInfo(svcInfo.MethodInfo(context.Background(), mocks.MockMethod))
+				return nil
+			},
+		},
+		SvcSearcher:            svcSearcher,
+		TracerCtl:              &rpcinfo.TraceController{},
+		InitOrResetRPCInfoFunc: initOrResetMockServerRPCInfo,
+	}
+
+	var captured context.Context
+	svrHandler, err := NewDefaultSvrTransHandler(opt, ext)
+	test.Assert(t, err == nil)
+	pl := remote.NewTransPipeline(svrHandler)
+	svrHandler.SetPipeline(pl)
+	if setter, ok := svrHandler.(remote.InvokeHandleFuncSetter); ok {
+		setter.SetInvokeHandleFunc(func(ctx context.Context, req, resp interface{}) error {
+			captured = ctx
+			return nil
+		})
+	}
+
+	err = svrHandler.OnRead(context.Background(), &mocks.Conn{})
+	test.Assert(t, err == nil, err)
+	test.Assert(t, captured != nil)
+	rpcinfotest.MustReadAsync(t, captured)
 }
 
 func TestSvrTransHandlerReadErr(t *testing.T) {
@@ -184,12 +239,9 @@ func TestSvrTransHandlerReadErr(t *testing.T) {
 				return mockErr
 			},
 		},
-		SvcSearcher: svcSearcher,
-		TracerCtl:   tracerCtl,
-		InitOrResetRPCInfoFunc: func(ri rpcinfo.RPCInfo, addr net.Addr) rpcinfo.RPCInfo {
-			rpcinfo.AsMutableEndpointInfo(ri.From()).SetAddress(addr)
-			return ri
-		},
+		SvcSearcher:            svcSearcher,
+		TracerCtl:              tracerCtl,
+		InitOrResetRPCInfoFunc: initOrResetMockServerRPCInfo,
 	}
 	ri := rpcinfo.NewRPCInfo(rpcinfo.EmptyEndpointInfo(), rpcinfo.FromBasicInfo(&rpcinfo.EndpointBasicInfo{}),
 		rpcinfo.NewInvocation("", mocks.MockMethod), nil, rpcinfo.NewRPCStats())
@@ -236,12 +288,9 @@ func TestSvrTransHandlerReadPanic(t *testing.T) {
 				panic("mock")
 			},
 		},
-		SvcSearcher: svcSearcher,
-		TracerCtl:   tracerCtl,
-		InitOrResetRPCInfoFunc: func(ri rpcinfo.RPCInfo, addr net.Addr) rpcinfo.RPCInfo {
-			rpcinfo.AsMutableEndpointInfo(ri.From()).SetAddress(addr)
-			return ri
-		},
+		SvcSearcher:            svcSearcher,
+		TracerCtl:              tracerCtl,
+		InitOrResetRPCInfoFunc: initOrResetMockServerRPCInfo,
 	}
 	ri := rpcinfo.NewRPCInfo(rpcinfo.EmptyEndpointInfo(), rpcinfo.FromBasicInfo(&rpcinfo.EndpointBasicInfo{}),
 		rpcinfo.NewInvocation("", ""), nil, rpcinfo.NewRPCStats())
@@ -254,6 +303,66 @@ func TestSvrTransHandlerReadPanic(t *testing.T) {
 	err = svrHandler.OnRead(ctx, &mocks.Conn{})
 	test.Assert(t, err != nil)
 	test.Assert(t, strings.Contains(err.Error(), "panic"))
+}
+
+func TestSvrTransHandlerOnErrorClosedConn(t *testing.T) {
+	ri := newMockRPCInfo()
+	ctx := rpcinfo.NewCtxWithRPCInfo(context.Background(), ri)
+	handler, err := NewDefaultSvrTransHandler(&remote.ServerOption{}, &MockExtension{})
+	test.Assert(t, err == nil, err)
+
+	handler.OnError(ctx, errors.New("encode failed"), &connWithActive{})
+
+	tag, ok := ri.From().Tag(rpcinfo.RemoteClosedTag)
+	test.Assert(t, ok)
+	test.Assert(t, tag == "1", tag)
+}
+
+func TestSvrTransHandlerFinishTracerByConnectionState(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	flattenedErr := errors.New("flattened encode error")
+	mockTracer := stats.NewMockTracer(ctrl)
+	mockTracer.EXPECT().Finish(gomock.Any()).Do(func(ctx context.Context) {
+		test.Assert(t, errors.Is(rpcinfo.GetRPCInfo(ctx).Stats().Error(), flattenedErr))
+	})
+	tracerCtl := &rpcinfo.TraceController{}
+	tracerCtl.Append(mockTracer)
+
+	rawHandler, err := NewDefaultSvrTransHandler(&remote.ServerOption{TracerCtl: tracerCtl}, &MockExtension{})
+	test.Assert(t, err == nil, err)
+	handler := rawHandler.(*svrTransHandler)
+	ri := newMockRPCInfo()
+	ctx := rpcinfo.NewCtxWithRPCInfo(context.Background(), ri)
+
+	handler.finishTracer(ctx, ri, flattenedErr, &connWithActive{}, nil)
+}
+
+func TestSvrTransHandlerFinishTracerByExtension(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	remoteClosedErr := errors.New("remote closed")
+	mockTracer := stats.NewMockTracer(ctrl)
+	mockTracer.EXPECT().Finish(gomock.Any()).Do(func(ctx context.Context) {
+		test.Assert(t, rpcinfo.GetRPCInfo(ctx).Stats().Error() == nil)
+	})
+	tracerCtl := &rpcinfo.TraceController{}
+	tracerCtl.Append(mockTracer)
+
+	rawHandler, err := NewDefaultSvrTransHandler(
+		&remote.ServerOption{TracerCtl: tracerCtl},
+		&MockExtension{IsRemoteClosedErrFunc: func(err error) bool {
+			return errors.Is(err, remoteClosedErr)
+		}},
+	)
+	test.Assert(t, err == nil, err)
+	handler := rawHandler.(*svrTransHandler)
+	ri := newMockRPCInfo()
+	ctx := rpcinfo.NewCtxWithRPCInfo(context.Background(), ri)
+
+	handler.finishTracer(ctx, ri, remoteClosedErr, &connWithActive{active: true}, nil)
 }
 
 func TestSvrTransHandlerOnReadHeartbeat(t *testing.T) {
@@ -292,12 +401,9 @@ func TestSvrTransHandlerOnReadHeartbeat(t *testing.T) {
 				return nil
 			},
 		},
-		SvcSearcher: svcSearcher,
-		TracerCtl:   tracerCtl,
-		InitOrResetRPCInfoFunc: func(ri rpcinfo.RPCInfo, addr net.Addr) rpcinfo.RPCInfo {
-			rpcinfo.AsMutableEndpointInfo(ri.From()).SetAddress(addr)
-			return ri
-		},
+		SvcSearcher:            svcSearcher,
+		TracerCtl:              tracerCtl,
+		InitOrResetRPCInfoFunc: initOrResetMockServerRPCInfo,
 	}
 	ri := rpcinfo.NewRPCInfo(rpcinfo.EmptyEndpointInfo(), rpcinfo.FromBasicInfo(&rpcinfo.EndpointBasicInfo{}),
 		rpcinfo.NewInvocation("", mocks.MockMethod), nil, rpcinfo.NewRPCStats())

@@ -26,11 +26,14 @@ import (
 	"time"
 
 	"github.com/cloudwego/netpoll"
+	"github.com/golang/mock/gomock"
 
 	"github.com/cloudwego/kitex/internal/mocks"
 	mockmessage "github.com/cloudwego/kitex/internal/mocks/message"
 	mocksremote "github.com/cloudwego/kitex/internal/mocks/remote"
+	mockstats "github.com/cloudwego/kitex/internal/mocks/stats"
 	"github.com/cloudwego/kitex/internal/test"
+	"github.com/cloudwego/kitex/internal/test/rpcinfotest"
 	"github.com/cloudwego/kitex/pkg/remote"
 	"github.com/cloudwego/kitex/pkg/remote/codec"
 	"github.com/cloudwego/kitex/pkg/rpcinfo"
@@ -238,6 +241,90 @@ func TestMuxSvrOnRead(t *testing.T) {
 	test.Assert(t, isReaderBufReleased.Load() == 1)
 	test.Assert(t, isWriteBufFlushed.Load() == 1)
 	test.Assert(t, isInvoked.Load() == 1)
+}
+
+func TestRPCInfoAccessNoRace(t *testing.T) {
+	const body = "hello world"
+	buf := netpoll.NewLinkBuffer(1024)
+	npconn := &MockNetpollConn{
+		ReaderFunc: func() (r netpoll.Reader) {
+			return buf
+		},
+		WriterFunc: func() (r netpoll.Writer) {
+			return buf
+		},
+		Conn: mocks.Conn{
+			RemoteAddrFunc: func() (r net.Addr) {
+				return addr
+			},
+		},
+	}
+	serverOpt := &remote.ServerOption{
+		InitOrResetRPCInfoFunc: func(_ rpcinfo.RPCInfo, addr net.Addr) rpcinfo.RPCInfo {
+			ri := newTestRpcInfo()
+			rpcinfo.AsMutableEndpointInfo(ri.From()).SetAddress(addr)
+			return ri
+		},
+		Codec: &MockCodec{
+			EncodeFunc: func(ctx context.Context, msg remote.Message, out remote.ByteBuffer) error {
+				r := mockHeader(msg.RPCInfo().Invocation().SeqID(), body)
+				_, err := out.WriteBinary(r.Bytes())
+				return err
+			},
+			DecodeFunc: func(ctx context.Context, msg remote.Message, in remote.ByteBuffer) error {
+				in.Skip(3 * codec.Size32)
+				_, err := in.ReadString(len(body))
+				if err != nil {
+					return err
+				}
+				msg.RPCInfo().Invocation().(rpcinfo.InvocationSetter).SetServiceName(mocks.MockServiceName)
+				return codec.SetOrCheckMethodName(ctx, mocks.MockMethod, msg)
+			},
+		},
+		SvcSearcher:      svcSearcher,
+		TracerCtl:        &rpcinfo.TraceController{},
+		ReadWriteTimeout: rwTimeout,
+	}
+	rawHandler, err := NewSvrTransHandlerFactory().NewTransHandler(serverOpt)
+	test.Assert(t, err == nil, err)
+	svrTransHdlr := rawHandler.(*svrTransHandler)
+
+	rpcInfo := newTestRpcInfo()
+	ctx := rpcinfo.NewCtxWithRPCInfo(context.Background(), rpcInfo)
+	msg := &mockmessage.MockMessage{
+		RPCInfoFunc: func() rpcinfo.RPCInfo {
+			return rpcInfo
+		},
+	}
+	muxSvrCon := newMuxSvrConn(npconn, &sync.Pool{})
+	ctx, err = svrTransHdlr.Write(ctx, muxSvrCon, msg)
+	test.Assert(t, err == nil, err)
+	time.Sleep(10 * time.Millisecond)
+	buf.Flush()
+
+	ctx, err = svrTransHdlr.OnActive(ctx, muxSvrCon)
+	test.Assert(t, err == nil, err)
+	pl := remote.NewTransPipeline(svrTransHdlr)
+	svrTransHdlr.SetPipeline(pl)
+
+	handled := make(chan struct{})
+	var captured context.Context
+	svrTransHdlr.SetInvokeHandleFunc(func(ctx context.Context, req, resp interface{}) error {
+		captured = ctx
+		close(handled)
+		return nil
+	})
+
+	err = svrTransHdlr.OnRead(ctx, npconn)
+	test.Assert(t, err == nil, err)
+	select {
+	case <-handled:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for mux server handler")
+	}
+	svrTransHdlr.tasks.Wait()
+	test.Assert(t, captured != nil)
+	rpcinfotest.MustReadAsync(t, captured)
 }
 
 // TestPanicAfterMuxSvrOnRead test have panic after read
@@ -537,7 +624,138 @@ func TestOnError(t *testing.T) {
 
 	ctx = rpcinfo.NewCtxWithRPCInfo(ctx, rpcInfo)
 	svrTransHdlr.OnError(ctx, errors.New("test mock err"), conn)
+	tag, ok := rpcInfo.From().Tag(rpcinfo.RemoteClosedTag)
+	test.Assert(t, ok)
+	test.Assert(t, tag == "1", tag)
 	svrTransHdlr.OnError(ctx, netpoll.ErrConnClosed, conn)
+
+	activeConn := &MockNetpollConn{
+		Conn: mocks.Conn{
+			RemoteAddrFunc: func() net.Addr {
+				return addr
+			},
+		},
+		IsActiveFunc: func() bool {
+			return true
+		},
+	}
+	activeRPCInfo := newTestRpcInfo()
+	activeCtx := rpcinfo.NewCtxWithRPCInfo(context.Background(), activeRPCInfo)
+	svrTransHdlr.OnError(activeCtx, errors.New("test mock err"), activeConn)
+	_, ok = activeRPCInfo.From().Tag(rpcinfo.RemoteClosedTag)
+	test.Assert(t, !ok)
+}
+
+func TestFinishTracerByConnectionState(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	flattenedErr := errors.New("flattened encode error")
+	mockTracer := mockstats.NewMockTracer(ctrl)
+	mockTracer.EXPECT().Finish(gomock.Any()).Do(func(ctx context.Context) {
+		test.Assert(t, errors.Is(rpcinfo.GetRPCInfo(ctx).Stats().Error(), flattenedErr))
+	})
+	tracerCtl := &rpcinfo.TraceController{}
+	tracerCtl.Append(mockTracer)
+
+	handler, err := newSvrTransHandler(&remote.ServerOption{TracerCtl: tracerCtl})
+	test.Assert(t, err == nil, err)
+	rpcInfo := newTestRpcInfo()
+	ctx := rpcinfo.NewCtxWithRPCInfo(context.Background(), rpcInfo)
+	conn := &MockNetpollConn{}
+
+	handler.finishTracer(ctx, rpcInfo, flattenedErr, conn, nil)
+}
+
+func TestFinishTracerByExtension(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockTracer := mockstats.NewMockTracer(ctrl)
+	mockTracer.EXPECT().Finish(gomock.Any()).Do(func(ctx context.Context) {
+		test.Assert(t, rpcinfo.GetRPCInfo(ctx).Stats().Error() == nil)
+	})
+	tracerCtl := &rpcinfo.TraceController{}
+	tracerCtl.Append(mockTracer)
+
+	handler, err := newSvrTransHandler(&remote.ServerOption{TracerCtl: tracerCtl})
+	test.Assert(t, err == nil, err)
+	rpcInfo := newTestRpcInfo()
+	ctx := rpcinfo.NewCtxWithRPCInfo(context.Background(), rpcInfo)
+	conn := &MockNetpollConn{
+		IsActiveFunc: func() bool {
+			return true
+		},
+	}
+
+	handler.finishTracer(ctx, rpcInfo, netpoll.ErrConnClosed, conn, nil)
+}
+
+func TestTaskFinishTracerPreservesActiveWriteErrorBeforeClose(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	encodeErr := errors.New("encode write failed")
+	active := true
+	mockTracer := mockstats.NewMockTracer(ctrl)
+	mockTracer.EXPECT().Start(gomock.Any()).DoAndReturn(func(ctx context.Context) context.Context {
+		return ctx
+	})
+	mockTracer.EXPECT().Finish(gomock.Any()).Do(func(ctx context.Context) {
+		err := rpcinfo.GetRPCInfo(ctx).Stats().Error()
+		test.Assert(t, errors.Is(err, encodeErr), err)
+		test.Assert(t, active)
+	})
+	tracerCtl := &rpcinfo.TraceController{}
+	tracerCtl.Append(mockTracer)
+
+	handler, err := newSvrTransHandler(&remote.ServerOption{
+		Codec: &MockCodec{
+			EncodeFunc: func(context.Context, remote.Message, remote.ByteBuffer) error {
+				return encodeErr
+			},
+			DecodeFunc: func(context.Context, remote.Message, remote.ByteBuffer) error {
+				return nil
+			},
+		},
+		TracerCtl: tracerCtl,
+		InitOrResetRPCInfoFunc: func(ri rpcinfo.RPCInfo, _ net.Addr) rpcinfo.RPCInfo {
+			return ri
+		},
+	})
+	test.Assert(t, err == nil, err)
+	handler.SetPipeline(remote.NewTransPipeline(handler))
+	handler.SetInvokeHandleFunc(func(context.Context, interface{}, interface{}) error {
+		return nil
+	})
+
+	rpcInfo := newTestRpcInfo()
+	rpcInfo.Invocation().(rpcinfo.InvocationSetter).SetMethodInfo(svcInfo.MethodInfo(context.Background(), mocks.MockMethod))
+	pool := &sync.Pool{
+		New: func() interface{} {
+			return rpcInfo
+		},
+	}
+	conn := &MockNetpollConn{
+		Conn: mocks.Conn{
+			CloseFunc: func() error {
+				active = false
+				return nil
+			},
+			RemoteAddrFunc: func() net.Addr {
+				return addr
+			},
+		},
+		IsActiveFunc: func() bool {
+			return active
+		},
+	}
+	muxSvrConn := newMuxSvrConn(conn, pool)
+	ctx := context.WithValue(context.Background(), ctxKeyMuxSvrConn{}, muxSvrConn)
+
+	handler.task(ctx, conn, netpoll.NewLinkBuffer(1))
+
+	test.Assert(t, !active)
 }
 
 // TestInvokeNoMethod test invoke no method
